@@ -1,0 +1,31 @@
+#!/bin/bash
+
+Stage=$1
+if [ $# -ne 1 ] || [[ ! $Stage =~ ^(prod|dev)$ ]]; then
+  echo "usage: ./deploy [prod|dev]"
+  exit 1
+fi
+
+if [ $Stage == "prod" ]; then
+  Stage="Prod"
+else
+  Stage="Dev"
+fi
+
+
+. ./config
+
+pushd src/twitter_api/python/
+pip install -r requirements.txt -t .
+popd
+
+sam build
+sam package --output-template-file packaged.yaml --s3-bucket s3.53ningen.com --profile $AWS_PROFILE
+sam deploy --template-file packaged.yaml --stack-name kusa-prod --capabilities CAPABILITY_NAMED_IAM  --profile $AWS_PROFILE \
+  --parameter-overrides \
+    "Stage=$Stage" \
+    "TwitterAccount=$TwitterAccount" \
+    "TwitterAccessTokenKey=$TwitterAccessTokenKey" \
+    "TwitterAccessTokenSecret=$TwitterAccessTokenSecret" \
+    "TwitterConsumerKey=$TwitterConsumerKey" \
+    "TwitterConsumerSecret=$TwitterConsumerSecret"

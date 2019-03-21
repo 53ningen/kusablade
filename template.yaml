@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+    kusablade
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: python3.6
+    MemorySize: 128
+
+Parameters:
+  Prefix:
+    Type: String
+    AllowedValues:
+      - Gomi
+    Default: Gomi
+  Stage:
+    Type: String
+    AllowedValues:
+      - Prod
+      - Dev
+    Default: Prod
+  IAMUsername:
+    Type: String
+  TwitterAccount:
+    Type: String
+  TwitterAccessTokenKey:
+    Type: String
+  TwitterAccessTokenSecret:
+    Type: String
+  TwitterConsumerKey:
+    Type: String
+  TwitterConsumerSecret:
+    Type: String
+
+Resources:
+  # IAM Role for Lambda Function
+  KusabladeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Prefix}${Stage}KusabladeFunctionRole
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - sns:Publish
+            Effect: Allow
+            Resource: !Ref FavoriteTopic
+          Version: '2012-10-17'
+        PolicyName: FavoriteTopicPublish
+      - PolicyDocument:
+          Statement:
+          - Action:
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+            Effect: Allow
+            Resource: !GetAtt FavoriteQueue.Arn
+          Version: '2012-10-17'
+        PolicyName: FavoriteQueueHandleMessage
+
+  Py3TwitterAPILayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub ${Prefix}${Stage}Py3TwitterAPILayer
+      Description: TwitterAPI(python 3.x)
+      ContentUri: src/twitter_api
+      RetentionPolicy: Retain
+      CompatibleRuntimes:
+        - python3.6
+        - python3.7
+
+  # Encrypt Environment Variables
+  ParameterEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: false
+      Enabled: true
+      KeyPolicy:
+        Id: !Sub ${Prefix}${Stage}ParameterEncryptionKey
+        Statement:
+        - Action:
+          - kms:Create*
+          - kms:Encrypt
+          - kms:Describe*
+          - kms:Enable*
+          - kms:List*
+          - kms:Put*
+          - kms:Update*
+          - kms:Revoke*
+          - kms:Disable*
+          - kms:Get*
+          - kms:Delete*
+          - kms:ScheduleKeyDeletion
+          - kms:CancelKeyDeletion
+          Effect: Allow
+          Principal:
+            AWS:
+            - Fn::Sub: arn:aws:iam::${AWS::AccountId}:user/${IAMUsername}
+          Resource: '*'
+          Sid: sid01
+        - Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey*
+          - kms:DescribeKey
+          Effect: Allow
+          Principal:
+            AWS:
+              - Fn::Sub: arn:aws:iam::${AWS::AccountId}:user/${IAMUsername}
+              - Fn::GetAtt:
+                - KusabladeFunctionRole
+                - Arn
+          Resource: '*'
+          Sid: sid02
+        Version: '2012-10-17'
+  ParameterEncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${Prefix}${Stage}ParameterEncryptionKey
+      TargetKeyId:
+        Ref: ParameterEncryptionKey
+
+
+  # Get Kusablade Job
+  GetKusabladeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${Prefix}${Stage}GetKusabladeFunction
+      CodeUri: src/get_kusablade/
+      Handler: app.lambda_handler
+      Runtime: python3.6
+      Role: !GetAtt KusabladeFunctionRole.Arn
+      KmsKeyArn: !GetAtt ParameterEncryptionKey.Arn
+      Environment:
+        Variables:
+          FavoriteTopicArn: !Ref FavoriteTopic
+          TwitterAccessTokenKey: !Sub ${TwitterAccessTokenKey}
+          TwitterAccessTokenSecret: !Sub ${TwitterAccessTokenSecret}
+          TwitterConsumerKey: !Sub ${TwitterConsumerKey}
+          TwitterConsumerSecret: !Sub ${TwitterConsumerSecret}
+      Layers:
+        - !Ref Py3TwitterAPILayer
+      Events:
+        FavoriteEvent:
+          Name: ${Prefix}${Stage}FavoriteEvent
+          Type: Schedule
+          Properties:
+            Schedule: "rate(3 minutes)"
+  GetKusabladeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Prefix}${Stage}GetKusabladeFunction
+      RetentionInDays: 14
+
+  # Favorite Job Resources
+  FavoriteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${Prefix}${Stage}FavoriteFunction
+      CodeUri: src/favorite/
+      Handler: app.lambda_handler
+      Runtime: python3.6
+      ReservedConcurrentExecutions: 1
+      Role: !GetAtt KusabladeFunctionRole.Arn
+      Environment:
+        Variables:
+          TwitterAccount: !Sub ${TwitterAccount}
+          TwitterAccessTokenKey: !Sub ${TwitterAccessTokenKey}
+          TwitterAccessTokenSecret: !Sub ${TwitterAccessTokenSecret}
+          TwitterConsumerKey: !Sub ${TwitterConsumerKey}
+          TwitterConsumerSecret: !Sub ${TwitterConsumerSecret}
+      Layers:
+        - !Ref Py3TwitterAPILayer
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt FavoriteQueue.Arn
+            BatchSize: 10
+  FavoriteLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Prefix}${Stage}FavoriteFunction
+      RetentionInDays: 14
+
+  FavoriteTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub ${Prefix}${Stage}FavoriteTopic
+      TopicName: !Sub ${Prefix}${Stage}FavoriteTopic
+  FavoriteQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${Prefix}${Stage}FavoriteQueue
+      VisibilityTimeout: 60
+  FavoriteQueue2FavoritePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref FavoriteQueue
+        PolicyDocument:
+          Statement:
+            Sid: FavoriteQueue2FavoritePolicy001
+            Effect: Allow
+            Principal: "*"
+            Action: sqs:SendMessage
+            Resource: !GetAtt FavoriteQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref FavoriteTopic
+  FavoriteQueue2FavoriteSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt FavoriteQueue.Arn
+      Protocol: sqs
+      RawMessageDelivery: true
+      TopicArn: !Ref FavoriteTopic

@@ -1,0 +1,3 @@
+atom-beautify
+linter
+linter-python-pep8
