@@ -20,8 +20,8 @@ pip install -r requirements.txt -t .
 popd
 
 sam build
-sam package --output-template-file packaged.yaml --s3-bucket s3.53ningen.com --profile $AWS_PROFILE
-sam deploy --template-file packaged.yaml --stack-name kusa-prod --capabilities CAPABILITY_NAMED_IAM  --profile $AWS_PROFILE \
+sam package --output-template-file packaged.yaml --s3-bucket $S3Bucket --profile $AwsProfile
+sam deploy --template-file packaged.yaml --stack-name kusa-prod --capabilities CAPABILITY_NAMED_IAM  --profile $AwsProfile \
   --parameter-overrides \
     "Stage=$Stage" \
     "TwitterAccount=$TwitterAccount" \
